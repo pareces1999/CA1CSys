@@ -3,6 +3,7 @@ import sqlite3 as sl
 import pandas as pd
 import re
 from datetime import date
+from CA1C_control_panel import db_file_path
 from base64images import carneaunclic_logo, oval_button_design
 from functions import execute_subprocess
 from sl_DBca1c_functions import ret_clients_data, upd_clients_data
@@ -29,7 +30,6 @@ today_da = int(date.today().strftime("%d"))
 today_mo = int(date.today().strftime("%m"))
 today_ye = int(date.today().strftime("%Y"))
 
-db_file_path = "C:\Pablo\PythonCourse\CA1CSys-Des\DBca1c.db"
 regex_mail = r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)"
 regex_dni = r"(^\d\d\d\d\d\d\d$)|(^\d\d\d\d\d\d\d\d$)"
 regex_cuil = r"^(20|23|27|30|33)([0-9]{9}|-[0-9]{8}-[0-9]{1})$"
