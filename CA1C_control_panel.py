@@ -4,7 +4,6 @@ import PySimpleGUI as sg
 from functions import execute_subprocess
 from base64images import carneaunclic_logo, mac_red_button_design, mac_green_button_design, mac_orange_button_design
 
-db_file_path = sys.argv
 
 sg.LOOK_AND_FEEL_TABLE["carneaunclick"] =   {"BACKGROUND": "#a61029",
                                              "TEXT": "#f6e4b5",
@@ -22,6 +21,9 @@ sg.LOOK_AND_FEEL_TABLE["carneaunclick"] =   {"BACKGROUND": "#a61029",
 
 sg.theme("carneaunclick")
 sg.SetOptions(font = "archivoblack 12")
+
+
+db_file_path = sys.argv
 
 frame_layout = [
                 [sg.Button("", image_data=mac_green_button_design, key="-order_handler-"), sg.Text("Order Handler")],
