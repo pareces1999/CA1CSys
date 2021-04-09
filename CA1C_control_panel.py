@@ -1,8 +1,8 @@
-import sys
 import time
 import PySimpleGUI as sg
 from functions import execute_subprocess
 from base64images import carneaunclic_logo, mac_red_button_design, mac_green_button_design, mac_orange_button_design
+
 
 sg.LOOK_AND_FEEL_TABLE["carneaunclick"] =   {"BACKGROUND": "#a61029",
                                              "TEXT": "#f6e4b5",
@@ -16,7 +16,6 @@ sg.LOOK_AND_FEEL_TABLE["carneaunclick"] =   {"BACKGROUND": "#a61029",
                                              "PROGRESS_DEPTH": 0,
                                              "COLOR_LIST": ["#a61029", "#1fad9f", "#b54e35", "#f6e4b5"],
                                              "DESCRIPTION": ["Turquoise", "Red", "Yellow"]}
-
 
 sg.theme("carneaunclick")
 sg.SetOptions(font = "archivoblack 12")
