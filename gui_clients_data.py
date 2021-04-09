@@ -2,6 +2,7 @@ import PySimpleGUI as sg
 import sqlite3 as sl
 import pandas as pd
 import sys
+import os
 import re
 from datetime import date
 from base64images import carneaunclic_logo, oval_button_design
@@ -25,7 +26,12 @@ sg.LOOK_AND_FEEL_TABLE["carneaunclick"] =   {"BACKGROUND": "#a61029",
 sg.theme("carneaunclick")
 sg.SetOptions(font="archivoblack 12")
 
-db_file_path = sys.argv
+try:
+     base_path = sys._MEIPASS
+except Exception:
+     base_path = os.path.abspath(".")
+
+db_file_path = base_path+"\DBca1c.db"
 
 today_da = int(date.today().strftime("%d"))
 today_mo = int(date.today().strftime("%m"))

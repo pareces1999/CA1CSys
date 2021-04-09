@@ -23,14 +23,6 @@ sg.LOOK_AND_FEEL_TABLE["carneaunclick"] =   {"BACKGROUND": "#a61029",
 sg.theme("carneaunclick")
 sg.SetOptions(font="archivoblack 12")
 
-def resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-
-    return os.path.join(base_path, relative_path)
-
 today_da = int(date.today().strftime("%d"))
 today_mo = int(date.today().strftime("%m"))
 today_ye = int(date.today().strftime("%Y"))
