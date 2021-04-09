@@ -55,5 +55,5 @@ while True:
     elif event == "-price_manager-":
         execute_subprocess("python", "gui_price_manager.py")
     elif event == "-clients_data-":
-        execute_subprocess("python", "gui_clients_data.py")
+        execute_subprocess("python", "gui_clients_data.py", db_file_path)
 window.close()
