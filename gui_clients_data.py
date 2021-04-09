@@ -1,10 +1,11 @@
 import PySimpleGUI as sg
 import sqlite3 as sl
 import pandas as pd
+import sys
+import os
 import re
 from datetime import date
 from base64images import carneaunclic_logo, oval_button_design
-from functions import execute_subprocess
 from sl_DBca1c_functions import ret_clients_data, upd_clients_data
 
 
@@ -25,11 +26,17 @@ sg.LOOK_AND_FEEL_TABLE["carneaunclick"] =   {"BACKGROUND": "#a61029",
 sg.theme("carneaunclick")
 sg.SetOptions(font="archivoblack 12")
 
+try:
+     base_path = sys._MEIPASS
+except Exception:
+     base_path = os.path.abspath(".")
+
+db_file_path = base_path+"\DBca1c.db"
+
 today_da = int(date.today().strftime("%d"))
 today_mo = int(date.today().strftime("%m"))
 today_ye = int(date.today().strftime("%Y"))
 
-db_file_path = "C:\Pablo\PythonCourse\CA1CSys-Des\DBca1c.db"
 regex_mail = r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)"
 regex_dni = r"(^\d\d\d\d\d\d\d$)|(^\d\d\d\d\d\d\d\d$)"
 regex_cuil = r"^(20|23|27|30|33)([0-9]{9}|-[0-9]{8}-[0-9]{1})$"
@@ -98,7 +105,6 @@ while True:
     if event in (sg.WIN_CLOSED, "-exit-"):
         break
 
-
     if event in ("-submit-", "-find-"):
         if not ((re.search(regex_dni, values["-find_dni-"]) or re.search(regex_cuil, values["-find_dni-"])) or re.search(regex_mail, values["-find_mail-"])):
             window["-find_mail-"].update("")
@@ -138,6 +144,7 @@ while True:
             elif len(search_df.index) == 1:
                 client_param = int(search_df["client_id"].to_string(index=False))
                 client_id, first_name, last_name, client_dni, e_mail, phone, address_street, address_number, address_floor, address_neigb, address_city, address_province, address_zip, address_country = ret_clients_data(client_param)
+                client_param = 0
                 window["-first-"].update(first_name)
                 window["-last-"].update(last_name)
                 window["-mail-"].update(e_mail)

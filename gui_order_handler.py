@@ -18,18 +18,8 @@ sg.LOOK_AND_FEEL_TABLE["carneaunclick"] =   {"BACKGROUND": "#a61029",
                                              "COLOR_LIST": ["#a61029", "#1fad9f", "#b54e35", "#f6e4b5"],
                                              "DESCRIPTION": ["Turquoise", "Red", "Yellow"]}
 
-
 sg.theme("carneaunclick")
 sg.SetOptions(font = "archivoblack 12")
-
-def resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-
-    return os.path.join(base_path, relative_path)
-
 
 frame_layout =  [
                 [sg.Text("Datos Combos", size=(12, 1)), sg.Input(), sg.FileBrowse()],
