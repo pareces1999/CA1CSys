@@ -1,4 +1,3 @@
-import sys
 import time
 import PySimpleGUI as sg
 from functions import execute_subprocess
@@ -18,12 +17,8 @@ sg.LOOK_AND_FEEL_TABLE["carneaunclick"] =   {"BACKGROUND": "#a61029",
                                              "COLOR_LIST": ["#a61029", "#1fad9f", "#b54e35", "#f6e4b5"],
                                              "DESCRIPTION": ["Turquoise", "Red", "Yellow"]}
 
-
 sg.theme("carneaunclick")
 sg.SetOptions(font = "archivoblack 12")
-
-
-db_file_path = sys.argv
 
 frame_layout = [
                 [sg.Button("", image_data=mac_green_button_design, key="-order_handler-"), sg.Text("Order Handler")],
@@ -55,5 +50,5 @@ while True:
     elif event == "-price_manager-":
         execute_subprocess("python", "gui_price_manager.py")
     elif event == "-clients_data-":
-        execute_subprocess("python", "gui_clients_data.py", db_file_path)
+        execute_subprocess("python", "gui_clients_data.py")
 window.close()
