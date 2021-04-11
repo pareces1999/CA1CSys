@@ -122,6 +122,7 @@ while True:
             if find_mail !="":
                 search_query = "select client_id from clients_pers_data where e_mail = '{}'".format(values["-find_mail-"])
             else:
+                client_param = 0
                 search_query = "select client_id from clients_pers_data where client_dni = {}".format(int(values["-find_dni-"]))
             con = sl.connect(db_file_path)
             search_df = pd.read_sql_query(search_query, con)
@@ -144,7 +145,6 @@ while True:
             elif len(search_df.index) == 1:
                 client_param = int(search_df["client_id"].to_string(index=False))
                 client_id, first_name, last_name, client_dni, e_mail, phone, address_street, address_number, address_floor, address_neigb, address_city, address_province, address_zip, address_country = ret_clients_data(client_param)
-                client_param = 0
                 window["-first-"].update(first_name)
                 window["-last-"].update(last_name)
                 window["-mail-"].update(e_mail)
