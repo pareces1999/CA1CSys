@@ -320,4 +320,4 @@ with combo_tab:
     st.dataframe(placeholder_df, use_container_width=True, hide_index=True)
     st.caption(f"Current catalog entries: {len(prices_df)} | Active entries: {active_count}")
 
-st.page_link("view/1_🏠_Home.py", label="Back to Home", icon="🏠")
+st.page_link("views/1_🏠_Home.py", label="Back to Home", icon="🏠")

@@ -8,7 +8,7 @@ st.set_page_config(
 )
 
 with st.sidebar:
-    st.image("assets/logo.png", width=150)
+    st.image("Logo_CA1C_COM.png", width=150)
 
 pages = [
     st.Page("views/1_🏠_Home.py",    title="Home",    icon="🏠", url_path="home"),
