@@ -90,6 +90,7 @@ def make_default_line_item() -> dict[str, Any]:
     return {
         "product_id": None,
         "product_name": "",
+        "catalog_unit": "",
         "quantity": 1,
         "unit_kg": 1.0,
         "estimated_unit_price": 0.0,
@@ -104,14 +105,41 @@ def ensure_session_state() -> None:
         st.session_state.order_line_items = [make_default_line_item()]
     if "selected_client_id" not in st.session_state:
         st.session_state.selected_client_id = None
+    if "selected_client_label" not in st.session_state:
+        st.session_state.selected_client_label = None
     if "order_notes" not in st.session_state:
         st.session_state.order_notes = ""
+    if "order_form_nonce" not in st.session_state:
+        st.session_state.order_form_nonce = 0
+
+
+def clear_order_widget_state() -> None:
+    dynamic_prefixes = (
+        "product_name_",
+        "quantity_",
+        "unit_kg_",
+        "unit_price_",
+        "component_product_",
+        "component_kg_",
+    )
+    dynamic_exact_keys = ("selected_client_label",)
+
+    keys_to_remove = [
+        key
+        for key in list(st.session_state.keys())
+        if key in dynamic_exact_keys or key.startswith(dynamic_prefixes)
+    ]
+    for key in keys_to_remove:
+        st.session_state.pop(key, None)
 
 
 def reset_order_form() -> None:
+    clear_order_widget_state()
     st.session_state.order_line_items = [make_default_line_item()]
     st.session_state.selected_client_id = None
+    st.session_state.selected_client_label = None
     st.session_state.order_notes = ""
+    st.session_state.order_form_nonce += 1
 
 
 def load_client_options() -> tuple[list[dict[str, Any]], dict[str, int]]:
@@ -335,6 +363,7 @@ def calculate_preview(line_items: list[dict[str, Any]]) -> dict[str, object]:
 
     for item_index, item in enumerate(line_items, start=1):
         product_name = str(item.get("product_name", "")).strip()
+        catalog_unit = str(item.get("catalog_unit", "unit") or "unit").lower()
         quantity = int(item.get("quantity", 0) or 0)
         unit_kg = float(item.get("unit_kg", 0) or 0)
         estimated_unit_price = float(item.get("estimated_unit_price", 0) or 0)
@@ -366,14 +395,22 @@ def calculate_preview(line_items: list[dict[str, Any]]) -> dict[str, object]:
                     f"Combo item {item_index} requires at least one component product with kilograms per combo unit."
                 )
 
+        # Monetary value follows the business rule directly:
+        # - kg products treat quantity as kilograms entered by the user
+        # - unit products treat quantity as pieces entered by the user
+        total_kg = float(quantity) if catalog_unit == "kg" else float(quantity) * unit_kg
+        line_total = float(quantity) * estimated_unit_price
+
         valid_items.append(
             {
                 "product_id": int(product_id),
                 "product_name": product_name,
+                "catalog_unit": catalog_unit,
                 "quantity": quantity,
                 "unit_kg": unit_kg,
+                "total_kg": total_kg,
                 "estimated_unit_price": estimated_unit_price,
-                "line_total": quantity * estimated_unit_price,
+                "line_total": line_total,
                 "is_combo": is_combo,
                 "combo_components": combo_components,
             }
@@ -416,22 +453,39 @@ def calculate_preview(line_items: list[dict[str, Any]]) -> dict[str, object]:
     if kg_product_df.empty:
         line_breakdown = pd.DataFrame()
     else:
-        unit_value_lookup = {
-            int(row["sku"]): float(row["precio_carneaunclick"])
-            for row in price_df.to_dict(orient="records")
-        }
-        kg_product_df["unit_value"] = kg_product_df["sku"].map(unit_value_lookup).fillna(0.0)
-        kg_product_df["estimated_value"] = kg_product_df["cantidad_unidades"] * kg_product_df["unit_value"]
-        line_breakdown = kg_product_df.rename(
-            columns={
-                "nombre_producto": "Product",
-                "peso_en_kg": "Unit KG",
-                "peso_total": "Total KG",
-                "cantidad_unidades": "Units",
-                "unit_value": "Unit Value",
-                "estimated_value": "Estimated Value",
-            }
+        order_value_df = (
+            pd.DataFrame(valid_items)
+            .groupby(["product_id", "product_name", "catalog_unit", "unit_kg"], as_index=False)[
+                ["quantity", "total_kg", "estimated_unit_price", "line_total"]
+            ]
+            .sum()
+            .rename(
+                columns={
+                    "product_id": "sku",
+                    "product_name": "Product",
+                    "catalog_unit": "Catalog Unit",
+                    "unit_kg": "Unit KG",
+                    "quantity": "raw_quantity",
+                    "total_kg": "Total KG",
+                    "estimated_unit_price": "Unit Value",
+                    "line_total": "Estimated Value",
+                }
+            )
         )
+
+        # Keep the legacy kg modules as the source for kilogram preview, but
+        # display monetary values from the direct business rule above.
+        kg_totals_lookup = {
+            int(row["sku"]): float(row["peso_total"])
+            for row in kg_product_df.to_dict(orient="records")
+        }
+        order_value_df["Total KG"] = order_value_df["sku"].map(kg_totals_lookup).fillna(order_value_df["Total KG"])
+        order_value_df["Units"] = order_value_df.apply(
+            lambda row: "kg" if row["Catalog Unit"] == "kg" else int(row["raw_quantity"]),
+            axis=1,
+        )
+        order_value_df["Line Total"] = order_value_df["Estimated Value"]
+        line_breakdown = order_value_df[["Product", "Catalog Unit", "Units", "Unit KG", "Total KG", "Unit Value", "Estimated Value", "Line Total"]]
 
     return {
         "valid_items": valid_items,
@@ -531,30 +585,40 @@ def render_order_lines() -> None:
     for index, line_item in enumerate(st.session_state.order_line_items):
         with st.container(border=True):
             st.markdown(f"**Item {index + 1}**")
+            nonce = st.session_state.order_form_nonce
             col1, col2 = st.columns([2.3, 1])
             with col1:
                 labels = [option["label"] for option in product_options]
-                selected_index = 0
+                product_key = f"product_name_{nonce}_{index}"
+                selected_option = None
                 if line_item.get("product_id") is not None:
-                    matches = [idx for idx, option in enumerate(product_options) if option["id"] == line_item["product_id"]]
+                    matches = [option["label"] for option in product_options if option["id"] == line_item["product_id"]]
                     if matches:
-                        selected_index = matches[0]
+                        selected_option = matches[0]
 
                 if labels:
                     selected_label = st.selectbox(
                         "Product",
-                        options=labels,
-                        index=selected_index,
-                        key=f"product_name_{index}",
+                        options=[None, *labels],
+                        index=0 if selected_option is None else [None, *labels].index(selected_option),
+                        key=product_key,
+                        format_func=lambda option: "Select a product from the catalog..." if option is None else option,
                         help="Products are loaded from the same Prices repository used by Price Manager.",
                     )
-                    selected_product = product_lookup[selected_label]
+                    selected_product = product_lookup[selected_label] if selected_label else {
+                        "id": None,
+                        "product_name": "",
+                        "unit_price": 0.0,
+                        "unit": "",
+                        "is_combo": False,
+                        "raw": {},
+                    }
                 else:
                     st.selectbox(
                         "Product",
                         options=["No active products available"],
                         index=0,
-                        key=f"product_name_{index}",
+                        key=product_key,
                         disabled=True,
                     )
                     selected_product = {
@@ -572,32 +636,37 @@ def render_order_lines() -> None:
 
             col3, col4, col5 = st.columns(3)
             with col3:
+                quantity_key = f"quantity_{nonce}_{index}"
                 quantity = st.number_input(
                     "Quantity",
                     min_value=0,
                     value=int(line_item.get("quantity", 1) or 1),
                     step=1,
-                    key=f"quantity_{index}",
+                    key=quantity_key,
                     help="The original kilogram modules expect whole ordered units.",
                 )
             with col4:
                 catalog_weight_per_unit = get_catalog_weight_per_unit(selected_product, float(line_item.get("unit_kg", 1.0) or 1.0))
+                unit_kg_key = f"unit_kg_{nonce}_{index}"
+                st.session_state[unit_kg_key] = float(catalog_weight_per_unit) if selected_product["id"] is not None else 0.0
                 unit_kg = st.number_input(
                     "Weight per Unit (kg)",
                     min_value=0.0,
-                    value=float(catalog_weight_per_unit),
+                    value=st.session_state[unit_kg_key],
                     step=0.1,
-                    key=f"unit_kg_{index}",
+                    key=unit_kg_key,
                     disabled=True,
                     help="Auto-populated from the selected catalog item.",
                 )
             with col5:
+                unit_price_key = f"unit_price_{nonce}_{index}"
+                st.session_state[unit_price_key] = float(selected_product["unit_price"]) if selected_product["id"] is not None else 0.0
                 estimated_unit_price = st.number_input(
                     "Unit Value",
                     min_value=0.0,
-                    value=float(selected_product["unit_price"]) if selected_product["id"] is not None else 0.0,
+                    value=st.session_state[unit_price_key],
                     step=100.0,
-                    key=f"unit_price_{index}",
+                    key=unit_price_key,
                     disabled=True,
                     help="Auto-populated from the active price catalog.",
                 )
@@ -614,7 +683,7 @@ def render_order_lines() -> None:
             line_total = quantity * estimated_unit_price
             info_col1, info_col2 = st.columns(2)
             with info_col1:
-                st.caption(f"Catalog unit: {selected_product['unit']}")
+                st.caption(f"Catalog unit: {selected_product['unit'] or 'No product selected'}")
                 if is_combo:
                     st.caption("Combo item: component kilograms are required for the original combo logic.")
             with info_col2:
@@ -623,6 +692,7 @@ def render_order_lines() -> None:
             st.session_state.order_line_items[index] = {
                 "product_id": selected_product["id"],
                 "product_name": selected_product["product_name"],
+                "catalog_unit": selected_product["unit"],
                 "quantity": quantity,
                 "unit_kg": unit_kg,
                 "estimated_unit_price": estimated_unit_price,
@@ -681,12 +751,18 @@ with main_col:
         selected_client_id = None
     else:
         labels = [option["label"] for option in client_options]
-        default_index = 0
-        if st.session_state.selected_client_id is not None:
-            matches = [idx for idx, option in enumerate(client_options) if option["id"] == st.session_state.selected_client_id]
+        if st.session_state.selected_client_id is not None and st.session_state.selected_client_label is None:
+            matches = [option["label"] for option in client_options if option["id"] == st.session_state.selected_client_id]
             if matches:
-                default_index = matches[0]
-        selected_label = st.selectbox("Client", options=labels, index=default_index, help="Clients are loaded from the Clients repository.")
+                st.session_state.selected_client_label = matches[0]
+        selected_label = st.selectbox(
+            "Client",
+            options=[None, *labels],
+            index=0 if st.session_state.selected_client_label is None else [None, *labels].index(st.session_state.selected_client_label),
+            key="selected_client_label",
+            format_func=lambda option: "Select a client..." if option is None else option,
+            help="Clients are loaded from the Clients repository.",
+        )
         selected_client_id = client_lookup.get(selected_label)
         st.session_state.selected_client_id = selected_client_id
 
