@@ -16,6 +16,7 @@ PRICE_COLUMNS = [
     "description",
     "price_per_kg",
     "price_per_unit",
+    "weight_per_unit",
     "unit",
     "category",
     "notes",
@@ -27,6 +28,7 @@ WRITEABLE_COLUMNS = [
     "description",
     "price_per_kg",
     "price_per_unit",
+    "weight_per_unit",
     "unit",
     "category",
     "notes",
@@ -46,6 +48,7 @@ CREATE TABLE IF NOT EXISTS {PRICES_TABLE} (
     description TEXT,
     price_per_kg REAL DEFAULT 0,
     price_per_unit REAL DEFAULT 0,
+    weight_per_unit REAL DEFAULT 0,
     unit TEXT DEFAULT 'kg',
     category TEXT,
     notes TEXT,
@@ -53,6 +56,10 @@ CREATE TABLE IF NOT EXISTS {PRICES_TABLE} (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
+
+WEIGHT_PER_UNIT_COLUMN_SQL = (
+    f"ALTER TABLE {PRICES_TABLE} ADD COLUMN weight_per_unit REAL DEFAULT 0"
+)
 
 
 @dataclass
@@ -79,6 +86,12 @@ class PricesRepository:
                     return RepositoryResult(False, "Database connection is not available.").__dict__
 
                 connection.execute(CREATE_PRICES_TABLE_SQL)
+                existing_columns = {
+                    str(row["name"])
+                    for row in connection.execute(f"PRAGMA table_info({PRICES_TABLE})").fetchall()
+                }
+                if "weight_per_unit" not in existing_columns:
+                    connection.execute(WEIGHT_PER_UNIT_COLUMN_SQL)
                 connection.commit()
                 return RepositoryResult(True, "Prices table is ready.").__dict__
         except sqlite3.Error as exc:

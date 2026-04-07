@@ -5,6 +5,7 @@ import streamlit as st
 
 from core.repositories.clients_repository import ClientsRepository
 from core.repositories.orders_repository import OrdersRepository
+from core.repositories.prices_repository import PricesRepository
 
 try:
     from functions import kg_per_order, kg_per_product
@@ -56,6 +57,7 @@ except ModuleNotFoundError:
 ROOT_DIR = Path(__file__).resolve().parent.parent
 clients_repo = ClientsRepository(show_errors=True)
 orders_repo = OrdersRepository(show_errors=True)
+prices_repo = PricesRepository(show_errors=True)
 DEFAULT_LIST_CODE = 1
 DEFAULT_ORDER_ID = 1
 
@@ -117,7 +119,14 @@ def inject_page_styles() -> None:
 
 def ensure_session_state() -> None:
     if "order_line_items" not in st.session_state:
-        st.session_state.order_line_items = [{"product_name": "", "quantity": 1.0, "unit_kg": 1.0, "estimated_unit_price": 0.0}]
+        st.session_state.order_line_items = [{
+            "product_id": None,
+            "product_name": "",
+            "quantity": 1.0,
+            "unit_kg": 1.0,
+            "estimated_unit_price": 0.0,
+            "line_total": 0.0,
+        }]
     if "selected_client_id" not in st.session_state:
         st.session_state.selected_client_id = None
     if "order_notes" not in st.session_state:
@@ -125,7 +134,14 @@ def ensure_session_state() -> None:
 
 
 def reset_order_form() -> None:
-    st.session_state.order_line_items = [{"product_name": "", "quantity": 1.0, "unit_kg": 1.0, "estimated_unit_price": 0.0}]
+    st.session_state.order_line_items = [{
+        "product_id": None,
+        "product_name": "",
+        "quantity": 1.0,
+        "unit_kg": 1.0,
+        "estimated_unit_price": 0.0,
+        "line_total": 0.0,
+    }]
     st.session_state.selected_client_id = None
     st.session_state.order_notes = ""
 
@@ -144,6 +160,52 @@ def load_client_options() -> tuple[list[dict], dict[str, int]]:
         options.append({"label": label, "id": int(row["id"]), "raw": row})
         lookup[label] = int(row["id"])
     return options, lookup
+
+
+def load_catalog_options() -> tuple[pd.DataFrame, list[dict], dict[str, dict]]:
+    prices_df = prices_repo.get_all_prices()
+    if prices_df.empty:
+        return prices_df, [], {}
+
+    catalog_df = prices_df.loc[prices_df["active"] == 1].copy()
+    catalog_df = catalog_df.sort_values(["product_name", "category", "id"]).reset_index(drop=True)
+    if catalog_df.empty:
+        return catalog_df, [], {}
+
+    options: list[dict] = []
+    lookup: dict[str, dict] = {}
+    for row in catalog_df.to_dict(orient="records"):
+        unit = row.get("unit") or "unit"
+        unit_price = float(row.get("price_per_unit", 0) or 0)
+        if unit == "kg" and float(row.get("price_per_kg", 0) or 0) > 0:
+            unit_price = float(row.get("price_per_kg", 0) or 0)
+        label = f"{row.get('product_name', 'Unnamed Product')} | {row.get('category') or 'General'} | {unit.upper()}"
+        option = {
+            "label": label,
+            "id": int(row["id"]),
+            "product_name": row.get("product_name", ""),
+            "unit": unit,
+            "unit_price": unit_price,
+            "raw": row,
+        }
+        options.append(option)
+        lookup[label] = option
+    return catalog_df, options, lookup
+
+
+def get_catalog_weight_per_unit(selected_product: dict[str, Any], current_weight: float) -> float:
+    raw_product = selected_product.get("raw", {})
+    explicit_weight = raw_product.get("weight_per_unit")
+    if explicit_weight is None:
+        explicit_weight = raw_product.get("weight_per_unit_kg")
+
+    if explicit_weight not in (None, ""):
+        return float(explicit_weight)
+
+    if selected_product.get("unit") == "kg":
+        return 1.0
+
+    return float(current_weight or 1.0)
 
 
 def build_order_frames(line_items: list[dict]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -185,7 +247,14 @@ def calculate_preview(line_items: list[dict]) -> dict[str, object]:
         unit_kg = float(item.get("unit_kg", 0) or 0)
         estimated_unit_price = float(item.get("estimated_unit_price", 0) or 0)
         if product_name and quantity > 0 and unit_kg >= 0:
-            valid_items.append({"product_name": product_name, "quantity": quantity, "unit_kg": unit_kg, "estimated_unit_price": estimated_unit_price})
+            valid_items.append({
+                "product_id": item.get("product_id"),
+                "product_name": product_name,
+                "quantity": quantity,
+                "unit_kg": unit_kg,
+                "estimated_unit_price": estimated_unit_price,
+                "line_total": quantity * estimated_unit_price,
+            })
 
     if not valid_items:
         return {"valid_items": [], "order_total_kg": 0.0, "line_breakdown": pd.DataFrame(), "estimated_total_value": 0.0}
@@ -196,7 +265,7 @@ def calculate_preview(line_items: list[dict]) -> dict[str, object]:
 
     line_breakdown = pd.DataFrame(valid_items)
     line_breakdown["line_total_kg"] = line_breakdown["quantity"] * line_breakdown["unit_kg"]
-    line_breakdown["estimated_line_value"] = line_breakdown["quantity"] * line_breakdown["estimated_unit_price"]
+    line_breakdown["estimated_line_value"] = line_breakdown["line_total"]
 
     order_total_kg = float(kg_order_df["peso_de_orden"].sum()) if not kg_order_df.empty else 0.0
     estimated_total_value = float(line_breakdown["estimated_line_value"].sum())
@@ -210,14 +279,47 @@ def calculate_preview(line_items: list[dict]) -> dict[str, object]:
 
 def render_order_lines() -> None:
     st.subheader("Line Items")
-    st.caption("Add one or more products with quantity and estimated weight per unit.")
+    st.caption("Add one or more products from the active catalog. Unit price is pulled automatically from Price Manager.")
+
+    catalog_df, product_options, product_lookup = load_catalog_options()
+    if catalog_df.empty:
+        st.warning("No active products are available yet. Add products in Price Manager before creating orders.")
 
     for index, line_item in enumerate(st.session_state.order_line_items):
         with st.container(border=True):
             st.markdown(f"**Item {index + 1}**")
             col1, col2 = st.columns([2.3, 1])
             with col1:
-                product_name = st.text_input("Product Description", value=line_item["product_name"], key=f"product_name_{index}", placeholder="Example: Vacio x 2kg", help="Free text for now. Later this can connect to the prices or products catalog.")
+                labels = [option["label"] for option in product_options]
+                selected_index = None
+                if line_item.get("product_id") is not None:
+                    matches = [idx for idx, option in enumerate(product_options) if option["id"] == line_item["product_id"]]
+                    if matches:
+                        selected_index = matches[0]
+
+                if labels:
+                    selected_label = st.selectbox(
+                        "Product",
+                        options=labels,
+                        index=selected_index if selected_index is not None else 0,
+                        key=f"product_name_{index}",
+                        help="Products are loaded from the same Prices repository used by Price Manager.",
+                    )
+                    selected_product = product_lookup[selected_label]
+                else:
+                    st.selectbox(
+                        "Product",
+                        options=["No active products available"],
+                        index=0,
+                        key=f"product_name_{index}",
+                        disabled=True,
+                    )
+                    selected_product = {
+                        "id": None,
+                        "product_name": "",
+                        "unit_price": 0.0,
+                        "unit": "unit",
+                    }
             with col2:
                 remove_disabled = len(st.session_state.order_line_items) == 1
                 if st.button("Remove", key=f"remove_line_{index}", use_container_width=True, disabled=remove_disabled):
@@ -228,11 +330,45 @@ def render_order_lines() -> None:
             with col3:
                 quantity = st.number_input("Quantity", min_value=0.0, value=float(line_item["quantity"]), step=1.0, key=f"quantity_{index}")
             with col4:
-                unit_kg = st.number_input("Weight per Unit (kg)", min_value=0.0, value=float(line_item["unit_kg"]), step=0.1, key=f"unit_kg_{index}", help="Used for the live kilogram calculation preview.")
+                catalog_weight_per_unit = get_catalog_weight_per_unit(
+                    selected_product,
+                    float(line_item["unit_kg"]),
+                )
+                unit_kg = st.number_input(
+                    "Weight per Unit (kg)",
+                    min_value=0.0,
+                    value=float(catalog_weight_per_unit),
+                    step=0.1,
+                    key=f"unit_kg_{index}",
+                    disabled=True,
+                    help="Auto-populated from the selected catalog item.",
+                )
             with col5:
-                estimated_unit_price = st.number_input("Unit Value", min_value=0.0, value=float(line_item["estimated_unit_price"]), step=100.0, key=f"unit_price_{index}", help="Placeholder value until prices are connected to the database.")
+                estimated_unit_price = st.number_input(
+                    "Unit Value",
+                    min_value=0.0,
+                    value=float(selected_product["unit_price"]) if selected_product["id"] is not None else 0.0,
+                    step=100.0,
+                    key=f"unit_price_{index}",
+                    disabled=True,
+                    help="Auto-populated from the active price catalog.",
+                )
 
-            st.session_state.order_line_items[index] = {"product_name": product_name, "quantity": quantity, "unit_kg": unit_kg, "estimated_unit_price": estimated_unit_price}
+            line_total = quantity * estimated_unit_price
+            info_col1, info_col2 = st.columns(2)
+            with info_col1:
+                st.caption(f"Catalog unit: {selected_product['unit']}")
+            with info_col2:
+                st.caption(f"Line total: ARS {line_total:,.2f}")
+
+            st.session_state.order_line_items[index] = {
+                "product_id": selected_product["id"],
+                "product_name": selected_product["product_name"],
+                "quantity": quantity,
+                "unit_kg": unit_kg,
+                "estimated_unit_price": estimated_unit_price,
+                "line_total": line_total,
+            }
 
 
 def validate_order(selected_client_id: int | None, valid_items: list[dict]) -> list[str]:
@@ -271,7 +407,6 @@ st.markdown(
 )
 
 client_options, client_lookup = load_client_options()
-preview = calculate_preview(st.session_state.order_line_items)
 recent_orders_df = orders_repo.get_recent_orders(limit=10)
 
 main_col, preview_col = st.columns([1.85, 1], gap="large")
@@ -302,11 +437,21 @@ with main_col:
     st.session_state.order_notes = order_notes
 
     render_order_lines()
+    preview = calculate_preview(st.session_state.order_line_items)
+    if preview["valid_items"]:
+        st.info(f"Running grand total: ARS {preview['estimated_total_value']:,.2f}")
 
     button_col1, button_col2, button_col3 = st.columns(3)
     with button_col1:
         if st.button("Add Line Item", use_container_width=True):
-            st.session_state.order_line_items.append({"product_name": "", "quantity": 1.0, "unit_kg": 1.0, "estimated_unit_price": 0.0})
+            st.session_state.order_line_items.append({
+                "product_id": None,
+                "product_name": "",
+                "quantity": 1.0,
+                "unit_kg": 1.0,
+                "estimated_unit_price": 0.0,
+                "line_total": 0.0,
+            })
             st.rerun()
     with button_col2:
         if st.button("Clear Form", use_container_width=True):
@@ -334,7 +479,7 @@ with main_col:
                         "weight_per_unit": item["unit_kg"],
                         "kg_contribution": item["quantity"] * item["unit_kg"],
                         "unit_value": item["estimated_unit_price"],
-                        "line_total": item["quantity"] * item["estimated_unit_price"],
+                        "line_total": item["line_total"],
                     }
                     for item in preview["valid_items"]
                 ]
@@ -367,6 +512,7 @@ with main_col:
         st.dataframe(display_recent_df, use_container_width=True, hide_index=True)
 
 with preview_col:
+    preview = calculate_preview(st.session_state.order_line_items)
     st.subheader("Live Order Preview")
     selected_client_name = selected_label if client_options and selected_label else "No client selected"
     render_summary_card("Client", selected_client_name)
@@ -378,12 +524,13 @@ with preview_col:
     st.write(f"Client: {selected_client_name}")
     st.write(f"Lines in preview: {len(preview['valid_items'])}")
     st.write(f"Estimated kilograms: {preview['order_total_kg']:.2f} kg")
+    st.write(f"Grand total: ARS {preview['estimated_total_value']:,.2f}")
 
     st.markdown("**Line Breakdown**")
     if preview["line_breakdown"].empty:
         st.info("Start adding line items to see the live calculation preview.")
     else:
-        breakdown_df = preview["line_breakdown"].rename(columns={"product_name": "Product", "quantity": "Qty", "unit_kg": "Unit KG", "line_total_kg": "Line KG", "estimated_line_value": "Line Value", "aggregated_kg": "Aggregated KG", "estimated_units": "Estimated Units"})
+        breakdown_df = preview["line_breakdown"].rename(columns={"product_name": "Product", "quantity": "Qty", "unit_kg": "Unit KG", "estimated_unit_price": "Unit Value", "line_total": "Line Total", "line_total_kg": "Line KG", "estimated_line_value": "Estimated Value", "aggregated_kg": "Aggregated KG", "estimated_units": "Estimated Units"})
         st.dataframe(breakdown_df, use_container_width=True, hide_index=True, height=320)
 
 st.page_link("views/1_🏠_Home.py", label="Back to Home", icon="🏠")

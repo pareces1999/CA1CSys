@@ -17,6 +17,7 @@ DEFAULT_FORM_VALUES = {
     "description": "",
     "price_per_kg": 0.0,
     "price_per_unit": 0.0,
+    "weight_per_unit": 0.0,
     "unit": "kg",
     "category": "General",
     "notes": "",
@@ -128,12 +129,16 @@ def validate_price_data(payload: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if not str(payload.get("product_name", "")).strip():
         errors.append("Product name is required.")
-    if float(payload.get("price_per_kg", 0) or 0) < 0:
-        errors.append("Price per kg cannot be negative.")
-    if float(payload.get("price_per_unit", 0) or 0) < 0:
-        errors.append("Price per unit cannot be negative.")
+    if float(payload.get("price_per_kg", 0) or 0) <= 0:
+        errors.append("Price per kg is required and must be greater than zero.")
+    if float(payload.get("price_per_unit", 0) or 0) <= 0:
+        errors.append("Price per unit is required and must be greater than zero.")
+    if float(payload.get("weight_per_unit", 0) or 0) <= 0:
+        errors.append("Weight per unit is required and must be greater than zero.")
     if not payload.get("unit"):
         errors.append("A unit must be selected.")
+    if not str(payload.get("category", "")).strip():
+        errors.append("Category is required.")
     return errors
 
 
@@ -143,6 +148,7 @@ def build_payload(form_values: dict[str, Any]) -> dict[str, Any]:
         "description": str(form_values.get("description", "")).strip(),
         "price_per_kg": float(form_values.get("price_per_kg", 0) or 0),
         "price_per_unit": float(form_values.get("price_per_unit", 0) or 0),
+        "weight_per_unit": float(form_values.get("weight_per_unit", 0) or 0),
         "unit": str(form_values.get("unit", "kg")),
         "category": str(form_values.get("category", "General")),
         "notes": str(form_values.get("notes", "")).strip(),
@@ -152,9 +158,33 @@ def build_payload(form_values: dict[str, Any]) -> dict[str, Any]:
 
 def prepare_prices_frame(prices_df: pd.DataFrame) -> pd.DataFrame:
     if prices_df.empty:
-        return pd.DataFrame(columns=["ID", "Product", "Category", "Unit", "Price / KG", "Price / Unit", "Active", "Created"])
+        return pd.DataFrame(
+            columns=[
+                "ID",
+                "Product",
+                "Category",
+                "Unit",
+                "Weight / Unit",
+                "Price / KG",
+                "Price / Unit",
+                "Active",
+                "Created",
+            ]
+        )
 
-    display_df = prices_df[["id", "product_name", "category", "unit", "price_per_kg", "price_per_unit", "active", "created_at"]].copy()
+    display_df = prices_df[
+        [
+            "id",
+            "product_name",
+            "category",
+            "unit",
+            "weight_per_unit",
+            "price_per_kg",
+            "price_per_unit",
+            "active",
+            "created_at",
+        ]
+    ].copy()
     display_df["active"] = display_df["active"].apply(lambda value: "Yes" if int(value) == 1 else "No")
     return display_df.rename(
         columns={
@@ -162,6 +192,7 @@ def prepare_prices_frame(prices_df: pd.DataFrame) -> pd.DataFrame:
             "product_name": "Product",
             "category": "Category",
             "unit": "Unit",
+            "weight_per_unit": "Weight / Unit",
             "price_per_kg": "Price / KG",
             "price_per_unit": "Price / Unit",
             "active": "Active",
@@ -190,21 +221,33 @@ def render_form() -> None:
 
     with st.form("price_form", clear_on_submit=False):
         st.subheader("Add / Edit Product")
-        product_name = st.text_input("Product Name", value=str(form_data.get("product_name", "")))
+        product_name = st.text_input("Product Name *", value=str(form_data.get("product_name", "")))
         description = st.text_input("Description", value=str(form_data.get("description", "")))
 
         col1, col2 = st.columns(2)
         with col1:
-            price_per_kg = st.number_input("Price per KG", min_value=0.0, value=float(form_data.get("price_per_kg", 0) or 0), step=100.0)
+            price_per_kg = st.number_input("Price per KG *", min_value=0.0, value=float(form_data.get("price_per_kg", 0) or 0), step=100.0)
+            weight_per_unit = st.number_input(
+                "Weight per Unit (kg) *",
+                min_value=0.0,
+                value=float(form_data.get("weight_per_unit", 0) or 0),
+                step=0.1,
+                help="Catalog-defined weight used by the Orders page preview.",
+            )
             unit_index = UNIT_OPTIONS.index(form_data.get("unit", "kg")) if form_data.get("unit", "kg") in UNIT_OPTIONS else 0
-            unit = st.selectbox("Unit", options=UNIT_OPTIONS, index=unit_index)
+            unit = st.selectbox("Unit *", options=UNIT_OPTIONS, index=unit_index)
             active = st.checkbox("Active", value=bool(form_data.get("active", True)))
         with col2:
-            price_per_unit = st.number_input("Price per Unit", min_value=0.0, value=float(form_data.get("price_per_unit", 0) or 0), step=100.0)
+            price_per_unit = st.number_input("Price per Unit *", min_value=0.0, value=float(form_data.get("price_per_unit", 0) or 0), step=100.0)
             category_index = CATEGORY_OPTIONS.index(form_data.get("category", "General")) if form_data.get("category", "General") in CATEGORY_OPTIONS else 0
-            category = st.selectbox("Category", options=CATEGORY_OPTIONS, index=category_index)
+            category = st.selectbox("Category *", options=CATEGORY_OPTIONS, index=category_index)
 
-        notes = st.text_area("Notes", value=str(form_data.get("notes", "")), placeholder="Optional notes for promotions, supplier references, or packing details.")
+        notes = st.text_area(
+            "Notes",
+            value=str(form_data.get("notes", "")),
+            placeholder="Optional operational notes such as packing details, supplier reference, or pricing context.",
+        )
+        st.caption("Fields marked with * are required. Description and Notes remain optional.")
 
         submitted = st.form_submit_button("Update Product" if is_editing else "Add Product", use_container_width=True, type="primary")
         if submitted:
@@ -214,6 +257,7 @@ def render_form() -> None:
                     "description": description,
                     "price_per_kg": price_per_kg,
                     "price_per_unit": price_per_unit,
+                    "weight_per_unit": weight_per_unit,
                     "unit": unit,
                     "category": category,
                     "notes": notes,
