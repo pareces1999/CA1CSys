@@ -1,4 +1,9 @@
+import os
+import runpy
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -7,54 +12,10 @@ from core.repositories.clients_repository import ClientsRepository
 from core.repositories.orders_repository import OrdersRepository
 from core.repositories.prices_repository import PricesRepository
 
-try:
-    from functions import kg_per_order, kg_per_product
-except ModuleNotFoundError:
-    def kg_per_order(order_df: pd.DataFrame, price_df: pd.DataFrame) -> pd.DataFrame:
-        temp_merged = pd.merge(order_df, price_df, on=["codigo_lista", "sku"], how="left")
-        order_df_merged = temp_merged[["orden", "cantidad_producto", "peso_en_kg", "combo"]].copy()
-        order_df_merged["peso_de_orden"] = order_df_merged["cantidad_producto"] * order_df_merged["peso_en_kg"]
-        return order_df_merged.groupby(["orden"])["peso_de_orden"].sum().reset_index()
-
-    def kg_per_product(order_df: pd.DataFrame, price_df: pd.DataFrame, combo_df: pd.DataFrame) -> pd.DataFrame:
-        temp_merged1 = pd.merge(order_df, price_df, on=["codigo_lista", "sku"], how="left")
-        temp_merged_combo = temp_merged1.loc[temp_merged1["combo"]]
-        temp_merged_nocombo = temp_merged1.loc[temp_merged1["combo"] != True].copy()
-        temp_merged_nocombo["peso_total"] = temp_merged_nocombo["cantidad_producto"] * temp_merged_nocombo["peso_en_kg"]
-
-        if temp_merged_combo.empty:
-            output_totals = temp_merged_nocombo.groupby(["sku", "nombre_producto", "peso_en_kg"])["peso_total"].sum().reset_index()
-        else:
-            temp_merged2 = pd.merge(
-                temp_merged_combo,
-                combo_df,
-                left_on=["codigo_lista", "sku"],
-                right_on=["codigo_lista", "codigo_combo"],
-                how="left",
-            )
-            temp_merged2["peso_total"] = temp_merged2["cantidad_producto"] * temp_merged2["cantidad_en_kg"]
-            for row_ix, row_values in temp_merged2.iterrows():
-                temp_merged2.iloc[row_ix, 8] = price_df.loc[
-                    ((price_df["codigo_lista"] == row_values[1]) & (price_df["sku"] == row_values[11])),
-                    "peso_en_kg",
-                ].values[0]
-
-            cols_dict = {"sku_y": "sku", "nombre_producto_y": "nombre_producto"}
-            temp_append1 = temp_merged_nocombo[["codigo_lista", "sku", "nombre_producto", "peso_en_kg", "peso_total"]]
-            temp_append2 = temp_merged2[["codigo_lista", "sku_y", "nombre_producto_y", "peso_en_kg", "peso_total"]]
-            temp_append3 = temp_append2.rename(columns=cols_dict)
-            cut_lst_merged = pd.concat([temp_append1, temp_append3], ignore_index=True)
-            output_totals = cut_lst_merged.groupby(["sku", "nombre_producto", "peso_en_kg"])["peso_total"].sum().reset_index()
-
-        output_totals["cantidad_unidades"] = 0.0
-        for row_ix, row_values in output_totals.iterrows():
-            peso_unit = output_totals.iloc[row_ix, 2]
-            peso_total = output_totals.iloc[row_ix, 3]
-            output_totals.iloc[row_ix, 4] = round(peso_total / peso_unit, 2) if peso_unit != 1 else 0
-        return output_totals
-
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+KG_PER_ORDER_SCRIPT = ROOT_DIR / "kg_per_order.py"
+KG_PER_PRODUCT_SCRIPT = ROOT_DIR / "kg_per_product.py"
 clients_repo = ClientsRepository(show_errors=True)
 orders_repo = OrdersRepository(show_errors=True)
 prices_repo = PricesRepository(show_errors=True)
@@ -117,16 +78,30 @@ def inject_page_styles() -> None:
     )
 
 
+def make_default_combo_component() -> dict[str, Any]:
+    return {
+        "product_id": None,
+        "product_name": "",
+        "cantidad_en_kg": 0.0,
+    }
+
+
+def make_default_line_item() -> dict[str, Any]:
+    return {
+        "product_id": None,
+        "product_name": "",
+        "quantity": 1,
+        "unit_kg": 1.0,
+        "estimated_unit_price": 0.0,
+        "line_total": 0.0,
+        "is_combo": False,
+        "combo_components": [],
+    }
+
+
 def ensure_session_state() -> None:
     if "order_line_items" not in st.session_state:
-        st.session_state.order_line_items = [{
-            "product_id": None,
-            "product_name": "",
-            "quantity": 1.0,
-            "unit_kg": 1.0,
-            "estimated_unit_price": 0.0,
-            "line_total": 0.0,
-        }]
+        st.session_state.order_line_items = [make_default_line_item()]
     if "selected_client_id" not in st.session_state:
         st.session_state.selected_client_id = None
     if "order_notes" not in st.session_state:
@@ -134,24 +109,17 @@ def ensure_session_state() -> None:
 
 
 def reset_order_form() -> None:
-    st.session_state.order_line_items = [{
-        "product_id": None,
-        "product_name": "",
-        "quantity": 1.0,
-        "unit_kg": 1.0,
-        "estimated_unit_price": 0.0,
-        "line_total": 0.0,
-    }]
+    st.session_state.order_line_items = [make_default_line_item()]
     st.session_state.selected_client_id = None
     st.session_state.order_notes = ""
 
 
-def load_client_options() -> tuple[list[dict], dict[str, int]]:
+def load_client_options() -> tuple[list[dict[str, Any]], dict[str, int]]:
     clients_df = clients_repo.get_all_clients()
     if clients_df.empty:
         return [], {}
 
-    options: list[dict] = []
+    options: list[dict[str, Any]] = []
     lookup: dict[str, int] = {}
     for row in clients_df.to_dict(orient="records"):
         full_name = f"{row.get('first_name', '')} {row.get('last_name', '')}".strip()
@@ -162,35 +130,49 @@ def load_client_options() -> tuple[list[dict], dict[str, int]]:
     return options, lookup
 
 
-def load_catalog_options() -> tuple[pd.DataFrame, list[dict], dict[str, dict]]:
+def get_catalog_unit_price(catalog_row: dict[str, Any]) -> float:
+    unit = catalog_row.get("unit") or "unit"
+    if unit == "kg" and float(catalog_row.get("price_per_kg", 0) or 0) > 0:
+        return float(catalog_row.get("price_per_kg", 0) or 0)
+    return float(catalog_row.get("price_per_unit", 0) or 0)
+
+
+def is_combo_catalog_product(catalog_row: dict[str, Any]) -> bool:
+    raw = catalog_row.get("raw", catalog_row)
+    if bool(raw.get("combo", False)):
+        return True
+    return str(raw.get("unit", "")).lower() == "combo" or str(raw.get("category", "")).lower() == "combo"
+
+
+def load_catalog_options() -> tuple[pd.DataFrame, list[dict[str, Any]], dict[str, dict[str, Any]], dict[int, dict[str, Any]]]:
     prices_df = prices_repo.get_all_prices()
     if prices_df.empty:
-        return prices_df, [], {}
+        return prices_df, [], {}, {}
 
     catalog_df = prices_df.loc[prices_df["active"] == 1].copy()
     catalog_df = catalog_df.sort_values(["product_name", "category", "id"]).reset_index(drop=True)
     if catalog_df.empty:
-        return catalog_df, [], {}
+        return catalog_df, [], {}, {}
 
-    options: list[dict] = []
-    lookup: dict[str, dict] = {}
+    options: list[dict[str, Any]] = []
+    label_lookup: dict[str, dict[str, Any]] = {}
+    id_lookup: dict[int, dict[str, Any]] = {}
     for row in catalog_df.to_dict(orient="records"):
         unit = row.get("unit") or "unit"
-        unit_price = float(row.get("price_per_unit", 0) or 0)
-        if unit == "kg" and float(row.get("price_per_kg", 0) or 0) > 0:
-            unit_price = float(row.get("price_per_kg", 0) or 0)
         label = f"{row.get('product_name', 'Unnamed Product')} | {row.get('category') or 'General'} | {unit.upper()}"
         option = {
             "label": label,
             "id": int(row["id"]),
             "product_name": row.get("product_name", ""),
             "unit": unit,
-            "unit_price": unit_price,
+            "unit_price": get_catalog_unit_price(row),
             "raw": row,
+            "is_combo": is_combo_catalog_product(row),
         }
         options.append(option)
-        lookup[label] = option
-    return catalog_df, options, lookup
+        label_lookup[label] = option
+        id_lookup[int(row["id"])] = option
+    return catalog_df, options, label_lookup, id_lookup
 
 
 def get_catalog_weight_per_unit(selected_product: dict[str, Any], current_weight: float) -> float:
@@ -208,80 +190,341 @@ def get_catalog_weight_per_unit(selected_product: dict[str, Any], current_weight
     return float(current_weight or 1.0)
 
 
-def build_order_frames(line_items: list[dict]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    order_rows: list[dict] = []
-    price_rows: list[dict] = []
+@contextmanager
+def pushd(target_dir: Path):
+    original_dir = Path.cwd()
+    os.chdir(target_dir)
+    try:
+        yield
+    finally:
+        os.chdir(original_dir)
 
-    for index, item in enumerate(line_items, start=1):
-        product_name = str(item.get("product_name", "")).strip() or f"Product {index}"
-        quantity = float(item.get("quantity", 0) or 0)
-        unit_kg = float(item.get("unit_kg", 0) or 0)
-        estimated_unit_price = float(item.get("estimated_unit_price", 0) or 0)
-        sku = index
 
-        order_rows.append({"orden": DEFAULT_ORDER_ID, "codigo_lista": DEFAULT_LIST_CODE, "cantidad_producto": quantity, "sku": sku})
-        price_rows.append(
+@contextmanager
+def pandas_append_compat():
+    original_append = getattr(pd.DataFrame, "append", None)
+
+    if original_append is None:
+        def _append_compat(self, other, ignore_index=False, verify_integrity=False, sort=False):
+            if verify_integrity:
+                raise NotImplementedError("verify_integrity is not supported by the compatibility shim.")
+            return pd.concat([self, other], ignore_index=ignore_index, sort=sort)
+
+        pd.DataFrame.append = _append_compat
+
+    try:
+        yield
+    finally:
+        if original_append is None:
+            delattr(pd.DataFrame, "append")
+
+
+def write_script_input_csv(target_path: Path, frame: pd.DataFrame) -> None:
+    frame.to_csv(target_path, sep=";", encoding="utf-8", decimal=",", index=False)
+
+
+def run_kg_script(
+    script_path: Path,
+    output_filename: str,
+    combo_df: pd.DataFrame,
+    price_df: pd.DataFrame,
+    order_df: pd.DataFrame,
+) -> pd.DataFrame:
+    with tempfile.TemporaryDirectory() as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        write_script_input_csv(temp_dir / "lista_combos.csv", combo_df)
+        write_script_input_csv(temp_dir / "lista_precios.csv", price_df)
+        write_script_input_csv(temp_dir / "ordenes.csv", order_df)
+
+        with pushd(temp_dir), pandas_append_compat():
+            runpy.run_path(str(script_path), run_name="__main__")
+
+        output_path = temp_dir / output_filename
+        return pd.read_csv(output_path, delimiter=";", decimal=",", encoding="utf-8")
+
+
+def build_script_frames(line_items: list[dict[str, Any]]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    _, _, _, catalog_by_id = load_catalog_options()
+
+    order_rows: list[dict[str, Any]] = []
+    combo_rows: list[dict[str, Any]] = []
+    involved_product_ids: set[int] = set()
+
+    for item in line_items:
+        product_id = int(item["product_id"])
+        involved_product_ids.add(product_id)
+        order_rows.append(
             {
                 "codigo_lista": DEFAULT_LIST_CODE,
-                "sku": sku,
-                "codigo_producto": f"SIM-{sku:03d}",
-                "nombre_producto": product_name,
-                "precio_frigorifico": 0.0,
-                "precio_carneaunclick": estimated_unit_price,
-                "peso_en_kg": unit_kg,
-                "combo": False,
+                "orden": DEFAULT_ORDER_ID,
+                "cantidad_producto": int(item["quantity"]),
+                "sku": product_id,
             }
         )
 
-    order_df = pd.DataFrame(order_rows)
-    price_df = pd.DataFrame(price_rows)
-    combo_df = pd.DataFrame(columns=["codigo_lista", "codigo_combo", "sku", "nombre_producto", "cantidad_en_kg", "frigorifico_sin_iva", "frigorifico_con_iva", "ca1c_sin_iva", "ca1c_con_iva"])
+        if item["is_combo"]:
+            for component in item["combo_components"]:
+                component_id = int(component["product_id"])
+                involved_product_ids.add(component_id)
+                combo_rows.append(
+                    {
+                        "codigo_lista": DEFAULT_LIST_CODE,
+                        "codigo_combo": product_id,
+                        "sku": component_id,
+                        "nombre_producto": component["product_name"],
+                        "cantidad_en_kg": float(component["cantidad_en_kg"]),
+                        "frigorifico_sin_iva": 0.0,
+                        "frigorifico_con_iva": 0.0,
+                        "ca1c_sin_iva": 0.0,
+                        "ca1c_con_iva": 0.0,
+                    }
+                )
+
+    price_rows: list[dict[str, Any]] = []
+    for product_id in sorted(involved_product_ids):
+        catalog_item = catalog_by_id.get(product_id)
+        if not catalog_item:
+            continue
+        price_rows.append(
+            {
+                "codigo_lista": DEFAULT_LIST_CODE,
+                "sku": product_id,
+                "codigo_producto": str(product_id),
+                "nombre_producto": catalog_item["product_name"],
+                "precio_frigorifico": 0.0,
+                "precio_carneaunclick": float(catalog_item["unit_price"]),
+                "peso_en_kg": get_catalog_weight_per_unit(catalog_item, 1.0),
+                "combo": bool(catalog_item["is_combo"]),
+            }
+        )
+
+    order_df = pd.DataFrame(order_rows, columns=["codigo_lista", "orden", "cantidad_producto", "sku"])
+    price_df = pd.DataFrame(
+        price_rows,
+        columns=[
+            "codigo_lista",
+            "sku",
+            "codigo_producto",
+            "nombre_producto",
+            "precio_frigorifico",
+            "precio_carneaunclick",
+            "peso_en_kg",
+            "combo",
+        ],
+    )
+    combo_df = pd.DataFrame(
+        combo_rows,
+        columns=[
+            "codigo_lista",
+            "codigo_combo",
+            "sku",
+            "nombre_producto",
+            "cantidad_en_kg",
+            "frigorifico_sin_iva",
+            "frigorifico_con_iva",
+            "ca1c_sin_iva",
+            "ca1c_con_iva",
+        ],
+    )
     return order_df, price_df, combo_df
 
 
-def calculate_preview(line_items: list[dict]) -> dict[str, object]:
-    valid_items = []
-    for item in line_items:
+def calculate_preview(line_items: list[dict[str, Any]]) -> dict[str, object]:
+    valid_items: list[dict[str, Any]] = []
+    validation_errors: list[str] = []
+
+    for item_index, item in enumerate(line_items, start=1):
         product_name = str(item.get("product_name", "")).strip()
-        quantity = float(item.get("quantity", 0) or 0)
+        quantity = int(item.get("quantity", 0) or 0)
         unit_kg = float(item.get("unit_kg", 0) or 0)
         estimated_unit_price = float(item.get("estimated_unit_price", 0) or 0)
-        if product_name and quantity > 0 and unit_kg >= 0:
-            valid_items.append({
-                "product_id": item.get("product_id"),
+        product_id = item.get("product_id")
+        is_combo = bool(item.get("is_combo", False))
+
+        if product_id is None or not product_name or quantity <= 0 or unit_kg < 0:
+            continue
+
+        combo_components: list[dict[str, Any]] = []
+        if is_combo:
+            raw_components = item.get("combo_components", [])
+            for component in raw_components:
+                component_id = component.get("product_id")
+                component_name = str(component.get("product_name", "")).strip()
+                cantidad_en_kg = float(component.get("cantidad_en_kg", 0) or 0)
+                if component_id is None or not component_name or cantidad_en_kg <= 0:
+                    continue
+                combo_components.append(
+                    {
+                        "product_id": int(component_id),
+                        "product_name": component_name,
+                        "cantidad_en_kg": cantidad_en_kg,
+                    }
+                )
+
+            if not combo_components:
+                validation_errors.append(
+                    f"Combo item {item_index} requires at least one component product with kilograms per combo unit."
+                )
+
+        valid_items.append(
+            {
+                "product_id": int(product_id),
                 "product_name": product_name,
                 "quantity": quantity,
                 "unit_kg": unit_kg,
                 "estimated_unit_price": estimated_unit_price,
                 "line_total": quantity * estimated_unit_price,
-            })
+                "is_combo": is_combo,
+                "combo_components": combo_components,
+            }
+        )
 
     if not valid_items:
-        return {"valid_items": [], "order_total_kg": 0.0, "line_breakdown": pd.DataFrame(), "estimated_total_value": 0.0}
+        return {
+            "valid_items": [],
+            "order_total_kg": 0.0,
+            "line_breakdown": pd.DataFrame(),
+            "estimated_total_value": 0.0,
+            "validation_errors": validation_errors,
+        }
 
-    order_df, price_df, combo_df = build_order_frames(valid_items)
-    kg_order_df = kg_per_order(order_df, price_df)
-    kg_product_df = kg_per_product(order_df, price_df, combo_df)
+    if validation_errors:
+        return {
+            "valid_items": valid_items,
+            "order_total_kg": 0.0,
+            "line_breakdown": pd.DataFrame(),
+            "estimated_total_value": float(sum(item["line_total"] for item in valid_items)),
+            "validation_errors": validation_errors,
+        }
 
-    line_breakdown = pd.DataFrame(valid_items)
-    line_breakdown["line_total_kg"] = line_breakdown["quantity"] * line_breakdown["unit_kg"]
-    line_breakdown["estimated_line_value"] = line_breakdown["line_total"]
+    try:
+        order_df, price_df, combo_df = build_script_frames(valid_items)
+        kg_order_df = run_kg_script(KG_PER_ORDER_SCRIPT, "kg_x_orden.csv", combo_df, price_df, order_df)
+        kg_product_df = run_kg_script(KG_PER_PRODUCT_SCRIPT, "totals.csv", combo_df, price_df, order_df)
+    except Exception as exc:
+        return {
+            "valid_items": valid_items,
+            "order_total_kg": 0.0,
+            "line_breakdown": pd.DataFrame(),
+            "estimated_total_value": float(sum(item["line_total"] for item in valid_items)),
+            "validation_errors": [f"KG calculation could not be completed with the original modules: {exc}"],
+        }
 
     order_total_kg = float(kg_order_df["peso_de_orden"].sum()) if not kg_order_df.empty else 0.0
-    estimated_total_value = float(line_breakdown["estimated_line_value"].sum())
+    estimated_total_value = float(sum(item["line_total"] for item in valid_items))
 
-    if not kg_product_df.empty:
-        kg_product_df = kg_product_df.rename(columns={"nombre_producto": "product_name", "peso_total": "aggregated_kg", "cantidad_unidades": "estimated_units"})
-        line_breakdown = line_breakdown.merge(kg_product_df[["product_name", "aggregated_kg", "estimated_units"]], on="product_name", how="left")
+    if kg_product_df.empty:
+        line_breakdown = pd.DataFrame()
+    else:
+        unit_value_lookup = {
+            int(row["sku"]): float(row["precio_carneaunclick"])
+            for row in price_df.to_dict(orient="records")
+        }
+        kg_product_df["unit_value"] = kg_product_df["sku"].map(unit_value_lookup).fillna(0.0)
+        kg_product_df["estimated_value"] = kg_product_df["cantidad_unidades"] * kg_product_df["unit_value"]
+        line_breakdown = kg_product_df.rename(
+            columns={
+                "nombre_producto": "Product",
+                "peso_en_kg": "Unit KG",
+                "peso_total": "Total KG",
+                "cantidad_unidades": "Units",
+                "unit_value": "Unit Value",
+                "estimated_value": "Estimated Value",
+            }
+        )
 
-    return {"valid_items": valid_items, "order_total_kg": order_total_kg, "line_breakdown": line_breakdown, "estimated_total_value": estimated_total_value}
+    return {
+        "valid_items": valid_items,
+        "order_total_kg": order_total_kg,
+        "line_breakdown": line_breakdown,
+        "estimated_total_value": estimated_total_value,
+        "validation_errors": [],
+    }
+
+
+def render_combo_components(
+    line_index: int,
+    combo_components: list[dict[str, Any]],
+    component_options: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    component_lookup = {option["label"]: option for option in component_options}
+    component_labels = [option["label"] for option in component_options]
+    updated_components = combo_components[:] if combo_components else [make_default_combo_component()]
+
+    with st.expander("Combo Composition", expanded=True):
+        st.caption("These component rows feed the original combo kilogram logic from the legacy module.")
+
+        for component_index, component in enumerate(updated_components):
+            component_col1, component_col2, component_col3 = st.columns([2.2, 1, 1])
+            with component_col1:
+                selected_component_index = 0
+                if component.get("product_id") is not None:
+                    matches = [idx for idx, option in enumerate(component_options) if option["id"] == component["product_id"]]
+                    if matches:
+                        selected_component_index = matches[0]
+
+                if component_labels:
+                    selected_component_label = st.selectbox(
+                        "Component Product",
+                        options=component_labels,
+                        index=selected_component_index,
+                        key=f"component_product_{line_index}_{component_index}",
+                    )
+                    selected_component = component_lookup[selected_component_label]
+                else:
+                    st.selectbox(
+                        "Component Product",
+                        options=["No component products available"],
+                        index=0,
+                        key=f"component_product_{line_index}_{component_index}",
+                        disabled=True,
+                    )
+                    selected_component = {
+                        "id": None,
+                        "product_name": "",
+                    }
+
+            with component_col2:
+                component_kg = st.number_input(
+                    "KG per Combo Unit",
+                    min_value=0.0,
+                    value=float(component.get("cantidad_en_kg", 0) or 0),
+                    step=0.1,
+                    key=f"component_kg_{line_index}_{component_index}",
+                )
+
+            with component_col3:
+                remove_disabled = len(updated_components) == 1
+                if st.button(
+                    "Remove Component",
+                    key=f"remove_component_{line_index}_{component_index}",
+                    use_container_width=True,
+                    disabled=remove_disabled,
+                ):
+                    updated_components.pop(component_index)
+                    st.session_state.order_line_items[line_index]["combo_components"] = updated_components
+                    st.rerun()
+
+            updated_components[component_index] = {
+                "product_id": selected_component.get("id"),
+                "product_name": selected_component.get("product_name", ""),
+                "cantidad_en_kg": component_kg,
+            }
+
+        if st.button(f"Add Component", key=f"add_component_{line_index}", use_container_width=True):
+            updated_components.append(make_default_combo_component())
+            st.session_state.order_line_items[line_index]["combo_components"] = updated_components
+            st.rerun()
+
+    return updated_components
 
 
 def render_order_lines() -> None:
     st.subheader("Line Items")
-    st.caption("Add one or more products from the active catalog. Unit price is pulled automatically from Price Manager.")
+    st.caption("Add one or more products from the active catalog. The kilogram preview runs through the original kg modules.")
 
-    catalog_df, product_options, product_lookup = load_catalog_options()
+    catalog_df, product_options, product_lookup, _ = load_catalog_options()
+    component_options = [option for option in product_options if not option["is_combo"]]
     if catalog_df.empty:
         st.warning("No active products are available yet. Add products in Price Manager before creating orders.")
 
@@ -291,7 +534,7 @@ def render_order_lines() -> None:
             col1, col2 = st.columns([2.3, 1])
             with col1:
                 labels = [option["label"] for option in product_options]
-                selected_index = None
+                selected_index = 0
                 if line_item.get("product_id") is not None:
                     matches = [idx for idx, option in enumerate(product_options) if option["id"] == line_item["product_id"]]
                     if matches:
@@ -301,7 +544,7 @@ def render_order_lines() -> None:
                     selected_label = st.selectbox(
                         "Product",
                         options=labels,
-                        index=selected_index if selected_index is not None else 0,
+                        index=selected_index,
                         key=f"product_name_{index}",
                         help="Products are loaded from the same Prices repository used by Price Manager.",
                     )
@@ -319,6 +562,7 @@ def render_order_lines() -> None:
                         "product_name": "",
                         "unit_price": 0.0,
                         "unit": "unit",
+                        "is_combo": False,
                     }
             with col2:
                 remove_disabled = len(st.session_state.order_line_items) == 1
@@ -328,12 +572,16 @@ def render_order_lines() -> None:
 
             col3, col4, col5 = st.columns(3)
             with col3:
-                quantity = st.number_input("Quantity", min_value=0.0, value=float(line_item["quantity"]), step=1.0, key=f"quantity_{index}")
-            with col4:
-                catalog_weight_per_unit = get_catalog_weight_per_unit(
-                    selected_product,
-                    float(line_item["unit_kg"]),
+                quantity = st.number_input(
+                    "Quantity",
+                    min_value=0,
+                    value=int(line_item.get("quantity", 1) or 1),
+                    step=1,
+                    key=f"quantity_{index}",
+                    help="The original kilogram modules expect whole ordered units.",
                 )
+            with col4:
+                catalog_weight_per_unit = get_catalog_weight_per_unit(selected_product, float(line_item.get("unit_kg", 1.0) or 1.0))
                 unit_kg = st.number_input(
                     "Weight per Unit (kg)",
                     min_value=0.0,
@@ -354,10 +602,21 @@ def render_order_lines() -> None:
                     help="Auto-populated from the active price catalog.",
                 )
 
+            combo_components: list[dict[str, Any]] = []
+            is_combo = bool(selected_product.get("is_combo", False))
+            if is_combo:
+                combo_components = render_combo_components(
+                    index,
+                    line_item.get("combo_components", []),
+                    component_options,
+                )
+
             line_total = quantity * estimated_unit_price
             info_col1, info_col2 = st.columns(2)
             with info_col1:
                 st.caption(f"Catalog unit: {selected_product['unit']}")
+                if is_combo:
+                    st.caption("Combo item: component kilograms are required for the original combo logic.")
             with info_col2:
                 st.caption(f"Line total: ARS {line_total:,.2f}")
 
@@ -368,15 +627,18 @@ def render_order_lines() -> None:
                 "unit_kg": unit_kg,
                 "estimated_unit_price": estimated_unit_price,
                 "line_total": line_total,
+                "is_combo": is_combo,
+                "combo_components": combo_components,
             }
 
 
-def validate_order(selected_client_id: int | None, valid_items: list[dict]) -> list[str]:
+def validate_order(selected_client_id: int | None, valid_items: list[dict[str, Any]], validation_errors: list[str]) -> list[str]:
     errors: list[str] = []
     if selected_client_id is None:
         errors.append("Please select a client before saving the order.")
     if not valid_items:
-        errors.append("Add at least one valid line item with product name, quantity, and weight.")
+        errors.append("Add at least one valid line item with product, quantity, and catalog weight.")
+    errors.extend(validation_errors)
     return errors
 
 
@@ -440,18 +702,13 @@ with main_col:
     preview = calculate_preview(st.session_state.order_line_items)
     if preview["valid_items"]:
         st.info(f"Running grand total: ARS {preview['estimated_total_value']:,.2f}")
+    for validation_error in preview["validation_errors"]:
+        st.warning(validation_error)
 
     button_col1, button_col2, button_col3 = st.columns(3)
     with button_col1:
         if st.button("Add Line Item", use_container_width=True):
-            st.session_state.order_line_items.append({
-                "product_id": None,
-                "product_name": "",
-                "quantity": 1.0,
-                "unit_kg": 1.0,
-                "estimated_unit_price": 0.0,
-                "line_total": 0.0,
-            })
+            st.session_state.order_line_items.append(make_default_line_item())
             st.rerun()
     with button_col2:
         if st.button("Clear Form", use_container_width=True):
@@ -460,7 +717,7 @@ with main_col:
             st.rerun()
     with button_col3:
         if st.button("Save Order", use_container_width=True, type="primary"):
-            errors = validate_order(selected_client_id, preview["valid_items"])
+            errors = validate_order(selected_client_id, preview["valid_items"], preview["validation_errors"])
             if errors:
                 for error in errors:
                     st.error(error)
@@ -530,7 +787,6 @@ with preview_col:
     if preview["line_breakdown"].empty:
         st.info("Start adding line items to see the live calculation preview.")
     else:
-        breakdown_df = preview["line_breakdown"].rename(columns={"product_name": "Product", "quantity": "Qty", "unit_kg": "Unit KG", "estimated_unit_price": "Unit Value", "line_total": "Line Total", "line_total_kg": "Line KG", "estimated_line_value": "Estimated Value", "aggregated_kg": "Aggregated KG", "estimated_units": "Estimated Units"})
-        st.dataframe(breakdown_df, use_container_width=True, hide_index=True, height=320)
+        st.dataframe(preview["line_breakdown"], use_container_width=True, hide_index=True, height=320)
 
 st.page_link("views/1_🏠_Home.py", label="Back to Home", icon="🏠")
