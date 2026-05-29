@@ -1,34 +1,56 @@
+# CA1C System - .gitignore
+# Professional exclusions for the Streamlit refactor (streamlit-refactor branch)
+
+# Virtual environment
 /venv/
 venv/
-# Virtual environment
 .env/
 env/
 
-# Python cache
+# Python cache & compiled
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.pyo
 
-# Environment variables
+# Environment / secrets
 .env
 .env.local
+*.env
 
-# Database files
+# Database files (local runtime data; schema committed separately)
 *.db
 *.sqlite3
+*.sqlite
 
-# OS files
+# OS generated files
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# IDE files
+# IDE / editor
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
-# Streamlit cache
+# Streamlit
 .streamlit/cache/
+.streamlit/secrets.toml
 
 # Logs
 *.log
+logs/
 
+# Archived legacy code (pre-Streamlit desktop GUI)
+# These files are preserved locally for reference but deliberately excluded from the repository
+archive/
+
+# Temporary / build artifacts
+*.tmp
+*.temp
+*.bak
+dist/
+build/

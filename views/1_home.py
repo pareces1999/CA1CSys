@@ -149,7 +149,7 @@ with col1:
         str(client_count),
         "Client records loaded through the repository layer and ready for future search, edit, and onboarding workflows.",
     )
-    st.page_link("views/2_👥_Clients.py", label="Open Clients", icon="👥")
+    st.page_link("views/2_clients.py", label="Open Clients", icon="👥")
 
 with col2:
     render_metric_card(
@@ -157,7 +157,7 @@ with col2:
         str(open_orders_count),
         "Open orders now come from the orders repository, ready for the next workflow and fulfillment steps.",
     )
-    st.page_link("views/3_📦_Orders.py", label="Open Orders", icon="📦")
+    st.page_link("views/3_orders.py", label="Open Orders", icon="📦")
 
 with col3:
     render_metric_card(
@@ -165,7 +165,7 @@ with col3:
         str(active_prices_count),
         "Active catalog prices now come from the new prices repository and will feed real order valuation next.",
     )
-    st.page_link("views/4_💰_Prices.py", label="Open Prices", icon="💰")
+    st.page_link("views/4_prices.py", label="Open Prices", icon="💰")
 
 with col4:
     db_value = "Ready for Turso" if db_info.backend == "turso" else str(db_info.table_count)
